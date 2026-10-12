@@ -11,14 +11,14 @@ st.caption("주별 세션 퍼널 | 플랫폼 · 유입 경로별 | 2025.07 ~ 202
 # ------------------------------------------------------------
 # 0. 필요한 데이터만 추출 — 쓸 테이블과 컬럼만 메모리 DB에 올리고, 정제 테이블 events를 처음 한 번만 만듦
 # ------------------------------------------------------------
-DATA_DIR = "data"                          # 원본 CSV를 넣어 둔 폴더
-NEEDED = {                                 # 이번 대시보드에 필요한 테이블과 컬럼
+DATA_DIR = "data"                         # 원본 CSV를 넣어 둔 폴더
+NEEDED = {                                # 이번 대시보드에 필요한 테이블과 컬럼
     "app_events": ["event_id", "event_datetime", "customer_id", "session_id",
                    "event_name", "platform", "traffic_source"],
 }
 
 @st.cache_resource
-def get_db():                              # 필요한 컬럼만 메모리 DB에 올리고, 정제 테이블 events를 만듦 (처음 한 번만)
+def get_db():                             # 필요한 컬럼만 메모리 DB에 올리고, 정제 테이블 events를 만듦 (처음 한 번만)
     con = sqlite3.connect(":memory:", check_same_thread=False)
     for name, cols in NEEDED.items():
         pd.read_csv(f"{DATA_DIR}/{name}.csv", usecols=cols).to_sql(name, con, index=False)
@@ -41,7 +41,7 @@ def get_db():                              # 필요한 컬럼만 메모리 DB에
 # 1. 데이터 준비 — 정제된 events 테이블을 SQL로 집계
 # ------------------------------------------------------------
 @st.cache_data
-def query(sql):                            # SQL을 실행해 표로 돌려줌
+def query(sql):                           # SQL을 실행해 표로 돌려줌
     return pd.read_sql(sql, get_db())
 
 # 주 × 플랫폼 × 유입 경로별 세션 퍼널
@@ -55,7 +55,7 @@ WITH s AS (                                 -- 세션의 첫 이벤트로 플랫
 SELECT s.주시작일,
        s.platform       AS 플랫폼,
        s.traffic_source AS 유입경로,
-       COUNT(DISTINCT e.session_id)                                                       AS 세션수,
+       COUNT(DISTINCT e.session_id)                                                                 AS 세션수,
        COUNT(DISTINCT CASE WHEN e.event_name = 'view_restaurant' THEN e.session_id END)   AS 조회세션,
        COUNT(DISTINCT CASE WHEN e.event_name = 'add_to_cart'     THEN e.session_id END)   AS 장바구니세션,
        COUNT(DISTINCT CASE WHEN e.event_name = 'begin_checkout'  THEN e.session_id END)   AS 결제시작세션,
@@ -63,7 +63,7 @@ SELECT s.주시작일,
        SUM(CASE WHEN e.event_name = 'payment_fail' THEN 1 ELSE 0 END)                     AS 결제실패
   FROM events e
   JOIN s ON e.session_id = s.session_id
- WHERE s.주시작일 < '2026-06-29'            -- 이틀치뿐인 마지막 주 제외
+ WHERE s.주시작일 < '2026-06-29'           -- 이틀치뿐인 마지막 주 제외
  GROUP BY 1, 2, 3
  ORDER BY 1, 2, 3
 """
@@ -74,7 +74,45 @@ def load_data():
     data["주시작일"] = pd.to_datetime(data["주시작일"]).dt.date
     return data
 
-df = load_data()                           # 주 × 플랫폼 × 유입 경로별 세션 퍼널
+df = load_data()                         # 주 × 플랫폼 × 유입 경로별 세션 퍼널
+
+# ------------------------------------------------------------
+# 사이드바 필터
+# ------------------------------------------------------------
+st.sidebar.header("필터")
+
+weeks = sorted(df["주시작일"].unique())
+selected_period = st.sidebar.select_slider(
+    "기간",
+    options=weeks,
+    value=(weeks[0], weeks[-1])
+)
+
+platforms = sorted(df["플랫폼"].unique())
+selected_platforms = st.sidebar.multiselect(
+    "플랫폼",
+    options=platforms,
+    default=platforms
+)
+
+traffic_sources = sorted(df["유입경로"].unique())
+selected_traffic = st.sidebar.multiselect(
+    "유입 경로",
+    options=traffic_sources,
+    default=traffic_sources
+)
+
+# 필터 적용 데이터 f
+f = df[
+    (df["주시작일"] >= selected_period[0]) &
+    (df["주시작일"] <= selected_period[1]) &
+    (df["플랫폼"].isin(selected_platforms)) &
+    (df["유입경로"].isin(selected_traffic))
+]
+
+if f.empty:
+    st.warning("선택한 조건에 해당하는 데이터가 없습니다. 필터를 바꿔 주세요.")
+    st.stop()
 
 # ------------------------------------------------------------
 # 2. KPI 카드
@@ -82,7 +120,7 @@ df = load_data()                           # 주 × 플랫폼 × 유입 경로�
 def rate(a, b):
     return a / b * 100 if b else 0
 
-t = df[["세션수", "결제시작세션", "주문세션"]].sum()
+t = f[["세션수", "결제시작세션", "주문세션"]].sum()
 c1, c2, c3 = st.columns(3)
 c1.metric("세션 수", f"{t['세션수']:,}개")
 c2.metric("주문 전환율 (방문 → 주문)", f"{rate(t['주문세션'], t['세션수']):.1f}%")
@@ -96,7 +134,7 @@ st.divider()
 left, right = st.columns(2)
 
 # 3-1. 주별 결제 전환율 (플랫폼별)
-wp = df.groupby(["주시작일", "플랫폼"])[["결제시작세션", "주문세션"]].sum().reset_index()
+wp = f.groupby(["주시작일", "플랫폼"])[["결제시작세션", "주문세션"]].sum().reset_index()
 wp["결제전환율"] = (wp["주문세션"] / wp["결제시작세션"] * 100).round(1)
 fig1 = px.line(wp, x="주시작일", y="결제전환율", color="플랫폼", markers=True,
                title="주별 결제 전환율 (플랫폼별)")
@@ -106,16 +144,16 @@ left.plotly_chart(fig1, width="stretch")
 # 3-2. 세션 퍼널
 steps = {"1.방문": "세션수", "2.식당조회": "조회세션", "3.장바구니": "장바구니세션",
          "4.결제시작": "결제시작세션", "5.주문완료": "주문세션"}
-fun = pd.DataFrame({"단계": list(steps), "세션수": [df[c].sum() for c in steps.values()]})
+fun = pd.DataFrame({"단계": list(steps), "세션수": [f[c].sum() for c in steps.values()]})
 fig2 = px.funnel(fun, x="세션수", y="단계", title="세션 퍼널")
 right.plotly_chart(fig2, width="stretch")
 
 # 3-3. 유입 경로별 주문 전환율
-ws = df.groupby("유입경로")[["세션수", "주문세션"]].sum().reset_index()
+ws = f.groupby("유입경로")[["세션수", "주문세션"]].sum().reset_index()
 ws["주문전환율"] = (ws["주문세션"] / ws["세션수"] * 100).round(1)
 ws = ws.sort_values("주문전환율")
 fig3 = px.bar(ws, x="주문전환율", y="유입경로", orientation="h", text_auto=".1f",
               hover_data=["세션수"], title="유입 경로별 주문 전환율")
-fig3.update_xaxes(range=[0, ws["주문전환율"].max() * 1.2])
+fig3.update_xaxes(range=[0, ws["주문전환율"].max() * 1.2 if not ws.empty else 1])
 fig3.update_layout(xaxis_title="주문 전환율 (%)", yaxis_title="")
 st.plotly_chart(fig3, width="stretch")
