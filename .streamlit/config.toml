@@ -1,0 +1,4 @@
+[theme]
+base = "light"
+primaryColor = "#52bf87"
+font = "Noto Sans KR:https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap"
